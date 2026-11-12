@@ -13,6 +13,7 @@ let service: ServiceConfig;
 let hook: Parameters<MoltbotPluginAPI["on"]>[1];
 let directory: string;
 let requests: number;
+let recallQueries: unknown[];
 let respond: (response: ServerResponse) => void;
 const memory = { results: [{ id: "fixture", text: "A fixture observation", type: "observation" }] };
 const ctx = {
@@ -33,14 +34,15 @@ function json(response: ServerResponse, body: unknown, status = 200) {
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), "hindsight-recall-http-"));
   requests = 0;
+  recallQueries = [];
   respond = (response) => json(response, memory);
   server = createServer(async (request, response) => {
     // Consume the whole request before responding, as the real API does.
-    for await (const _chunk of request) {
-      /* drain */
-    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
     if (request.url?.endsWith("/recall")) {
       requests++;
+      recallQueries.push(JSON.parse(Buffer.concat(chunks).toString("utf8")).query);
       respond(response);
     } else {
       json(response, { api_version: "0.10.0", features: { store_document_text: true } });
@@ -110,4 +112,13 @@ it("disconnects an unanswered HTTP recall when its deadline expires", async () =
   expect(await recall()).toBeUndefined();
   await vi.waitFor(() => expect(disconnected).toBe(true));
   expect(requests).toBe(1);
+});
+
+it.each([
+  ["What did I decide about the project?", "What is my favorite color?", "What did I decide about the project?"],
+  ["  ", "What is my favorite color?", "What is my favorite color?"],
+  [undefined, undefined, "What did we plan for next week?"],
+])("recalls from the first usable user input (%s)", async (currentUserMessage, rawMessage, expected) => {
+  await hook({ currentUserMessage, rawMessage, prompt: "What did we plan for next week?" }, ctx);
+  expect(recallQueries).toEqual([expected]);
 });

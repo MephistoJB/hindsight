@@ -1090,16 +1090,17 @@ export function stripRuntimeEnvelope(content: string): string {
 }
 
 /**
- * Extract a recall query from a hook event's rawMessage or prompt.
+ * Extract a recall query from the hook event's current user input.
  *
- * Prefers rawMessage (clean user text). Falls back to prompt, stripping
+ * Prefers currentUserMessage, then rawMessage. Falls back to prompt, stripping
  * envelope formatting (System: lines, [Channel ...] headers, [from: X] footers).
  *
  * Returns null when no usable query (< 5 chars) can be extracted.
  */
 export function extractRecallQuery(
   rawMessage: string | undefined,
-  prompt: string | undefined
+  prompt: string | undefined,
+  currentUserMessage?: string
 ): string | null {
   // Reject known metadata/system message patterns — these are not user queries
   const METADATA_PATTERNS = [
@@ -1112,19 +1113,16 @@ export function extractRecallQuery(
     // 2026.8.1+ marker form: a leftover header line is metadata, not a query.
     isInboundMetaHeaderLine(s.split("\n")[0] ?? "");
 
-  let recallQuery = rawMessage;
-  // Strip sender metadata envelope before any checks
-  if (recallQuery) {
-    recallQuery = stripRuntimeEnvelope(
-      stripInlineTimestampPrefix(stripMetadataEnvelopes(recallQuery))
-    );
-  }
-  if (
-    !recallQuery ||
-    typeof recallQuery !== "string" ||
-    recallQuery.trim().length < 5 ||
-    isMetadata(recallQuery)
-  ) {
+  const cleanUserInput = (input: string | undefined) => {
+    if (typeof input !== "string") return undefined;
+    const cleaned = stripRuntimeEnvelope(
+      stripInlineTimestampPrefix(stripMetadataEnvelopes(input))
+    ).trim();
+    return cleaned.length >= 5 && !isMetadata(cleaned) ? cleaned : undefined;
+  };
+
+  let recallQuery = cleanUserInput(currentUserMessage) ?? cleanUserInput(rawMessage);
+  if (!recallQuery) {
     recallQuery = prompt;
     // Strip metadata envelopes from prompt too, then check if anything useful remains
     if (recallQuery) {
@@ -2824,11 +2822,11 @@ export default function (api: MoltbotPluginAPI) {
         debug(`[Hindsight] event.context keys: ${Object.keys(event.context ?? {}).join(", ")}`);
 
         // Get the user's latest message for recall — only the raw user text, not the full prompt
-        // rawMessage is clean user text; prompt includes envelope, system events, media notes, etc.
+        // Prefer the current user input over a prepared prompt that can include runtime context.
         debug(
           `[Hindsight] extractRecallQuery input lengths - raw: ${event.rawMessage?.length ?? 0}, prompt: ${event.prompt?.length ?? 0}`
         );
-        const extracted = extractRecallQuery(event.rawMessage, event.prompt);
+        const extracted = extractRecallQuery(event.rawMessage, event.prompt, event.currentUserMessage);
         if (!extracted) {
           debug("[Hindsight] extractRecallQuery returned null, skipping recall");
           return;
